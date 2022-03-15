@@ -1,0 +1,15 @@
+builds:
+  - main: ./cmd/tinylb.go
+    binary: tinylb
+archives:
+  - format: gz
+    files:
+      - none*
+release:
+  prerelease: auto
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
