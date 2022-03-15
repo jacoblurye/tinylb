@@ -1,0 +1,25 @@
+{
+  "control_plane": { "port": 5555 },
+  "target_groups": [
+    {
+      "name": "tg-1",
+      "port": 8080,
+      "timeout": 30,
+      "targets": [
+        { "host": "localhost", "port": 8081 },
+        { "host": "localhost", "port": 8082 },
+        { "host": "localhost", "port": 8083 }
+      ]
+    },
+    {
+      "name": "tg-2",
+      "port": 7080,
+      "timeout": 60,
+      "targets": [
+        { "host": "localhost", "port": 7081 },
+        { "host": "localhost", "port": 7082 },
+        { "host": "localhost", "port": 7083 }
+      ]
+    }
+  ]
+}
