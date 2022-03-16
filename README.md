@@ -16,12 +16,20 @@ Distribute load for many services via one load balancer instance - a barebones a
 **Graceful shutdown**  
 Safely terminate the load balancer without interruption to open connections.
 
+## Installation
+
+Install the latest release from GitHub.
+
+```bash
+go install -v github.com/jacoblurye/tinylb/cmd/tinylb@latest
+```
+
 ## Usage
 
 Start a load balancer.
 
 ```bash
-go run cmd/tinylb.go -config-path config.json
+tinylb -config-path config.json
 ```
 
 Update the load balancer config on the fly.
