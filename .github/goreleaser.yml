@@ -1,5 +1,5 @@
 builds:
-  - main: ./cmd/tinylb.go
+  - main: ./cmd/tinylb
     binary: tinylb
 archives:
   - format: gz
