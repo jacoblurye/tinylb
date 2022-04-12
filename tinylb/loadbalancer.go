@@ -1,21 +1,24 @@
 package tinylb
 
 import (
-	"context"
-	"errors"
-	"fmt"
-	"net/http"
+	"os"
 	"sync"
+	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/sirupsen/logrus"
 )
 
 type LoadBalancer struct {
-	sync.Mutex
+	sync.RWMutex
 	Config
 
-	// controlSrv is the control plane's HTTP server.
-	controlSrv *http.Server
+	// configPath is the path to the load balancer's config file.
+	configPath string
+	// stop signals that all long-running goroutines for this target group should stop.
+	stop bool
+	// closedWatcher signals that the config watcher has exited.
+	closedWatcher chan bool
 	// targetGroups maps target group names to target groups.
 	targetGroups map[string]*TargetGroup
 
@@ -24,17 +27,15 @@ type LoadBalancer struct {
 
 // Open starts a new load balancer with the given config, ready to receive
 // incoming TCP connections.
-func Open(config Config, log *logrus.Logger) (*LoadBalancer, error) {
-	targetGroups := make(map[string]*TargetGroup, len(config.TargetGroups))
-	for _, targetGroupConfig := range config.TargetGroups {
-		targetGroup, err := openTargetGroup(targetGroupConfig, log)
-		if err != nil {
-			return nil, err
-		}
-		targetGroups[targetGroupConfig.Name] = targetGroup
+func Open(configPath string, log *logrus.Logger) (*LoadBalancer, error) {
+	lb := &LoadBalancer{
+		configPath:    configPath,
+		closedWatcher: make(chan bool),
+		targetGroups:  make(map[string]*TargetGroup),
+		log:           log,
 	}
-	lb := &LoadBalancer{Config: config, targetGroups: targetGroups, log: log}
-	lb.openControlPlane()
+	lb.ReloadConfig()
+	go lb.configWatcher()
 
 	return lb, nil
 }
@@ -46,10 +47,6 @@ func (lb *LoadBalancer) UpdateConfig(config Config) error {
 	defer lb.Unlock()
 
 	lb.log.Info("updating config")
-
-	if config.ControlPlane.Port != lb.ControlPlane.Port {
-		return errors.New("cannot update control plane port on-the-fly")
-	}
 
 	// Find target groups that need to be created.
 	create := make([]TargetGroupConfig, 0)
@@ -112,6 +109,19 @@ func (lb *LoadBalancer) UpdateConfig(config Config) error {
 // groups and shutting down the control plane server if it's running.
 func (lb *LoadBalancer) Close() error {
 	lb.Lock()
+	if lb.stop {
+		lb.Unlock()
+		lb.log.Info("already closed - noop")
+		return nil
+	}
+	lb.stop = true
+	lb.Unlock()
+
+	lb.log.Info("closing config watcher")
+	<-lb.closedWatcher
+	lb.log.Info("config watcher closed")
+
+	lb.Lock()
 	defer lb.Unlock()
 
 	lb.log.Info("draining all targets")
@@ -126,58 +136,65 @@ func (lb *LoadBalancer) Close() error {
 	wg.Wait()
 	lb.log.Info("done draining all targets")
 
-	if lb.controlSrv != nil {
-		lb.log.Info("shutting down control plane")
-		err := lb.controlSrv.Shutdown(context.Background())
-		if err != nil {
-			return err
-		}
-		lb.log.Info("done shutting down control plane")
-	}
-
 	return nil
 }
 
-// openControlPlane starts the HTTP control plane server for this load balancer.
-//
-// Currently, this server has a single endpoint `/config`. POST requests to
-// this endpoint containing a valid JSON config in their request body will be
-// applied to the load balancer.
-func (lb *LoadBalancer) openControlPlane() {
-	log := lb.log.WithField("control_plane_port", lb.Config.ControlPlane.Port)
-	handler := http.NewServeMux()
-	handler.HandleFunc("/config", func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-		if r.Method != "POST" {
-			log.Errorf("%s /config %d method not allowed", r.Method, http.StatusMethodNotAllowed)
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			fmt.Fprintln(w, `{"error":"method not allowed"}`)
-			return
+func (lb *LoadBalancer) ReloadConfig() {
+	configFile, err := os.Open(lb.configPath)
+	if err != nil {
+		lb.log.Errorln("error opening config file: ", err)
+	}
+	defer configFile.Close()
+
+	config, err := LoadConfig(configFile)
+	if err != nil {
+		lb.log.Errorln("error loading config: ", err)
+	}
+
+	err = lb.UpdateConfig(*config)
+	if err != nil {
+		lb.log.Errorln("error updating config: ", err)
+	}
+}
+
+// configWatcher listens for config file changes at the load balancer's configPath.
+// Adapted from: https://martensson.io/go-fsnotify-and-kubernetes-configmaps
+func (lb *LoadBalancer) configWatcher() {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		lb.log.Panicln(err)
+	}
+	defer watcher.Close()
+	err = watcher.Add(lb.configPath)
+	if err != nil {
+		lb.log.Errorln("error watching config path: ", err)
+	}
+	for {
+		lb.RLock()
+		shouldExit := lb.stop
+		lb.RUnlock()
+		if shouldExit {
+			break
 		}
 
-		config, err := LoadConfig(r.Body)
-		if err != nil {
-			log.Errorf("%s /config %d %s", r.Method, http.StatusUnprocessableEntity, err)
-			w.WriteHeader(http.StatusUnprocessableEntity)
-			fmt.Fprintf(w, `{"error":"%s"}`, err)
-			return
+		select {
+		case <-time.After(1 * time.Second):
+			continue
+		case event := <-watcher.Events:
+			// Support k8s configmap updates, which look like removals.
+			if event.Op&fsnotify.Remove == fsnotify.Remove {
+				watcher.Remove(event.Name)
+				watcher.Add(lb.configPath)
+				lb.ReloadConfig()
+			}
+			// Support normal file updates.
+			if event.Op&fsnotify.Write == fsnotify.Write {
+				lb.ReloadConfig()
+			}
+		case err := <-watcher.Errors:
+			lb.log.Errorln(err)
 		}
+	}
 
-		err = lb.UpdateConfig(*config)
-		if err != nil {
-			log.Errorf("%s /config %d %s", r.Method, http.StatusBadRequest, err)
-			w.WriteHeader(http.StatusBadRequest)
-			fmt.Fprintf(w, `{"error":"%s"}`, err)
-			return
-		}
-
-		log.Infof("%s /config %d", r.Method, http.StatusOK)
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, `{"ok":true}`)
-	})
-
-	lb.controlSrv = &http.Server{Addr: fmt.Sprintf(":%d", lb.Config.ControlPlane.Port), Handler: handler}
-	go lb.controlSrv.ListenAndServe()
-
-	log.Info("started control plane")
+	lb.closedWatcher <- true
 }

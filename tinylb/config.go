@@ -10,13 +10,6 @@ import (
 type Config struct {
 	// TargetGroups is a list of configs for all if this load balancer's target groups.
 	TargetGroups []TargetGroupConfig `json:"target_groups"`
-	// ControlPlane is config for the load balancer's control plane server.
-	ControlPlane ControlPlaneConfig `json:"control_plane"`
-}
-
-type ControlPlaneConfig struct {
-	// Port is the port on which the control plane HTTP server should listen.
-	Port uint
 }
 
 type TargetGroupConfig struct {
@@ -43,11 +36,6 @@ func LoadConfig(reader io.Reader) (*Config, error) {
 	err := json.NewDecoder(reader).Decode(&config)
 	if err != nil {
 		return nil, err
-	}
-
-	// Ensure config includes control plane config
-	if config.ControlPlane.Port == 0 {
-		return nil, errors.New("control plane config must be defined")
 	}
 
 	// Ensure config has at least one target group

@@ -13,19 +13,14 @@ func TestLoadConfig(t *testing.T) {
 	assert.Equal(t, err.Error(), "invalid character ']' looking for beginning of object key string")
 	assert.Empty(t, config)
 
-	// A config with no conrol plane config should error.
+	// A config with no target group config should error.
 	config, err = LoadConfig(strings.NewReader("{}"))
-	assert.Equal(t, err.Error(), "control plane config must be defined")
-	assert.Empty(t, config)
-
-	config, err = LoadConfig(strings.NewReader(`{"control_plane": { "port": 5555 }}`))
 	assert.Equal(t, err.Error(), "load balancer must have at least one target group")
 	assert.Empty(t, config)
 
 	// A config with a target group with no targets should error.
 	config, err = LoadConfig(strings.NewReader(`
 	{
-		"control_plane": { "port": 5555 },
 		"target_groups": [
 			{"name": "target-1", "port": 8080, "timeout": 30}
 		]
@@ -37,7 +32,6 @@ func TestLoadConfig(t *testing.T) {
 	// A valid config should load without errors.
 	config, err = LoadConfig(strings.NewReader(`
 	{
-		"control_plane": { "port": 5555 },
 		"target_groups": [
 			{
 				"name": "target-1",
@@ -61,7 +55,6 @@ func TestLoadConfig(t *testing.T) {
 	`))
 	assert.Empty(t, err)
 	assert.Equal(t, *config, Config{
-		ControlPlane: ControlPlaneConfig{Port: 5555},
 		TargetGroups: []TargetGroupConfig{
 			{
 				Name:    "target-1",

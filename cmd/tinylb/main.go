@@ -28,18 +28,18 @@ func init() {
 }
 
 func main() {
-	configFile, err := os.Open(*configPath)
-	if err != nil {
-		log.Fatal("error loading config: ", err)
-	}
-	defer configFile.Close()
+	// configFile, err := os.Open(*configPath)
+	// if err != nil {
+	// 	log.Fatal("error loading config: ", err)
+	// }
+	// defer configFile.Close()
 
-	config, err := tinylb.LoadConfig(configFile)
-	if err != nil {
-		log.Fatal("error loading config: ", err)
-	}
+	// config, err := tinylb.LoadConfig(configFile)
+	// if err != nil {
+	// 	log.Fatal("error loading config: ", err)
+	// }
 
-	lb, err := tinylb.Open(*config, log)
+	lb, err := tinylb.Open(*configPath, log)
 	if err != nil {
 		log.Fatal("error opening load balancer: ", err)
 	}

@@ -32,8 +32,4 @@ Start a load balancer.
 tinylb -config-path config.json
 ```
 
-Update the load balancer config on the fly.
-
-```bash
-curl -X POST --data @../config.json http:/localhost:$CONTROL_PLANE_PORT/config
-```
+To update `tinylb`'s config on-the-fly, simply save a change to the config file, and `tinylb` will automatically pull in and apply the change.

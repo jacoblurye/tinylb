@@ -1,12 +1,12 @@
 package tinylb
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/ioutil"
 	"net"
 	"net/http"
 	"os"
@@ -170,21 +170,28 @@ func countTargetHits(ctx context.Context, targetGroup *TargetGroup) int {
 }
 
 func TestLoadBalancerOpen(t *testing.T) {
+	configFile, err := ioutil.TempFile("", "config.*.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.Remove(configFile.Name())
+
 	config := Config{
-		ControlPlane: ControlPlaneConfig{Port: 5555},
 		TargetGroups: []TargetGroupConfig{
 			randomTargetGroupConfig("tg-1", 1, 3),
 			randomTargetGroupConfig("tg-2", 1, 2),
 		},
 	}
-	lb, err := Open(config, log)
+	err = json.NewEncoder(configFile).Encode(&config)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	lb, err := Open(configFile.Name(), log)
 	if err != nil {
 		log.Panic(err)
 	}
 	defer lb.Close()
-
-	// Wait for control plane to start up.
-	time.Sleep(3 * time.Second)
 
 	// Check that both target groups are present and listening for connections.
 	for _, targetGroupConfig := range config.TargetGroups {
@@ -195,48 +202,37 @@ func TestLoadBalancerOpen(t *testing.T) {
 			log.Panic(err)
 		}
 	}
-
-	// Check that the control plane server is accepting connections.
-	configBytes, err := json.Marshal(config)
-	if err != nil {
-		log.Panic(err)
-	}
-	url := fmt.Sprintf("http://127.0.0.1:%d/config", config.ControlPlane.Port)
-	res, err := http.Post(url, "application/json", bytes.NewReader(configBytes))
-	if err != nil {
-		log.Panic(err)
-	}
-	assert.Equal(t, res.StatusCode, http.StatusOK)
 }
 
 func TestLoadBalancerUpdateConfig(t *testing.T) {
+	configFile, err := ioutil.TempFile("", "config.*.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.Remove(configFile.Name())
+
 	config := Config{
-		ControlPlane: ControlPlaneConfig{Port: 5555},
 		TargetGroups: []TargetGroupConfig{
 			randomTargetGroupConfig("tg-1", 1, 3),
 			randomTargetGroupConfig("tg-2", 1, 2),
 		},
 	}
-	lb, err := Open(config, log)
+	err = json.NewEncoder(configFile).Encode(&config)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	lb, err := Open(configFile.Name(), log)
 	if err != nil {
 		log.Panic(err)
 	}
 	defer lb.Close()
-
-	// Wait for control plane to start up.
-	time.Sleep(3 * time.Second)
 
 	// Changing a target group port is not allowed.
 	config.TargetGroups[0].Port++
 	err = lb.UpdateConfig(config)
 	assert.Equal(t, err.Error(), "cannot update target group port on-the-fly")
 	config.TargetGroups[0].Port--
-
-	// Changing the control plane port is not allowed.
-	config.ControlPlane.Port++
-	err = lb.UpdateConfig(config)
-	assert.Equal(t, err.Error(), "cannot update control plane port on-the-fly")
-	config.ControlPlane.Port--
 
 	// Remove one target group, remove all but one target from the remaining target group,
 	// and add a new target group to the load balancer config.
@@ -258,21 +254,27 @@ func TestLoadBalancerUpdateConfig(t *testing.T) {
 }
 
 func TestLoadBalancerClose(t *testing.T) {
+	configFile, err := ioutil.TempFile("", "config.*.json")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer os.Remove(configFile.Name())
+
 	config := Config{
-		ControlPlane: ControlPlaneConfig{Port: 5555},
 		TargetGroups: []TargetGroupConfig{
 			randomTargetGroupConfig("tg-1", 30, 3),
 			randomTargetGroupConfig("tg-2", 15, 2),
 		},
 	}
-	lb, err := Open(config, log)
+	err = json.NewEncoder(configFile).Encode(&config)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	lb, err := Open(configFile.Name(), log)
 	if err != nil {
 		log.Panic(err)
 	}
-	defer lb.Close()
-
-	// Wait for control plane to start up.
-	time.Sleep(3 * time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
@@ -313,75 +315,9 @@ func TestLoadBalancerClose(t *testing.T) {
 	lb.Close()
 
 	wg.Wait()
-}
 
-func TestLoadBalancerControlPlaneErrors(t *testing.T) {
-	config := Config{
-		ControlPlane: ControlPlaneConfig{Port: 5555},
-		TargetGroups: []TargetGroupConfig{
-			randomTargetGroupConfig("tg-1", 30, 3),
-		},
-	}
-	_, err := Open(config, log)
-	if err != nil {
-		log.Panic(err)
-	}
-
-	// Wait for control plane to start up.
-	time.Sleep(3 * time.Second)
-
-	url := fmt.Sprintf("http://127.0.0.1:%d/config", config.ControlPlane.Port)
-
-	// Errors on non-POST requests.
-	res, err := http.Get(url)
-	if err != nil {
-		log.Panic(err)
-	}
-	assert.Equal(t, res.StatusCode, http.StatusMethodNotAllowed)
-
-	// Errors on malformed JSON.
-	res, err = http.Post(url, "application/json", strings.NewReader("{]"))
-	if err != nil {
-		log.Panic(err)
-	}
-	assert.Equal(t, res.StatusCode, http.StatusUnprocessableEntity)
-
-	// Errors on target port updates.
-	config.TargetGroups[0].Port++
-	configBytes, err := json.Marshal(config)
-	if err != nil {
-		log.Panic(err)
-	}
-	res, err = http.Post(url, "application/json", bytes.NewReader(configBytes))
-	if err != nil {
-		log.Panic(err)
-	}
-	assert.Equal(t, res.StatusCode, http.StatusBadRequest)
-	defer res.Body.Close()
-	body, err := io.ReadAll(res.Body)
-	if err != nil {
-		log.Panic(err)
-	}
-	assert.Equal(t, string(body), `{"error":"cannot update target group port on-the-fly"}`)
-	config.TargetGroups[0].Port--
-
-	// Errors on control plane port updates.
-	config.ControlPlane.Port++
-	configBytes, err = json.Marshal(config)
-	if err != nil {
-		log.Panic(err)
-	}
-	res, err = http.Post(url, "application/json", bytes.NewReader(configBytes))
-	if err != nil {
-		log.Panic(err)
-	}
-	assert.Equal(t, res.StatusCode, http.StatusBadRequest)
-	defer res.Body.Close()
-	body, err = io.ReadAll(res.Body)
-	if err != nil {
-		log.Panic(err)
-	}
-	assert.Equal(t, string(body), `{"error":"cannot update control plane port on-the-fly"}`)
+	// Closing the lb twice is a noop
+	lb.Close()
 }
 
 func TestTargetGroupOpenTargetGroup(t *testing.T) {
