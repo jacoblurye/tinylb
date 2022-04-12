@@ -34,7 +34,11 @@ func Open(configPath string, log *logrus.Logger) (*LoadBalancer, error) {
 		targetGroups:  make(map[string]*TargetGroup),
 		log:           log,
 	}
-	lb.ReloadConfig()
+	err := lb.ReloadConfig()
+	if err != nil {
+		return nil, err
+	}
+
 	go lb.configWatcher()
 
 	return lb, nil
@@ -139,22 +143,24 @@ func (lb *LoadBalancer) Close() error {
 	return nil
 }
 
-func (lb *LoadBalancer) ReloadConfig() {
+func (lb *LoadBalancer) ReloadConfig() error {
 	configFile, err := os.Open(lb.configPath)
 	if err != nil {
-		lb.log.Errorln("error opening config file: ", err)
+		return err
 	}
 	defer configFile.Close()
 
 	config, err := LoadConfig(configFile)
 	if err != nil {
-		lb.log.Errorln("error loading config: ", err)
+		return err
 	}
 
 	err = lb.UpdateConfig(*config)
 	if err != nil {
-		lb.log.Errorln("error updating config: ", err)
+		return err
 	}
+
+	return nil
 }
 
 // configWatcher listens for config file changes at the load balancer's configPath.
@@ -181,18 +187,22 @@ func (lb *LoadBalancer) configWatcher() {
 		case <-time.After(1 * time.Second):
 			continue
 		case event := <-watcher.Events:
+			var err error
 			// Support k8s configmap updates, which look like removals.
 			if event.Op&fsnotify.Remove == fsnotify.Remove {
 				watcher.Remove(event.Name)
 				watcher.Add(lb.configPath)
-				lb.ReloadConfig()
+				err = lb.ReloadConfig()
 			}
 			// Support normal file updates.
 			if event.Op&fsnotify.Write == fsnotify.Write {
-				lb.ReloadConfig()
+				err = lb.ReloadConfig()
+			}
+			if err != nil {
+				lb.log.Error("error reloading config: ", err)
 			}
 		case err := <-watcher.Errors:
-			lb.log.Errorln(err)
+			lb.log.Error("error watching config: ", err)
 		}
 	}
 

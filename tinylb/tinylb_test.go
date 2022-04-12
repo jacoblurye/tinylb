@@ -170,6 +170,10 @@ func countTargetHits(ctx context.Context, targetGroup *TargetGroup) int {
 }
 
 func TestLoadBalancerOpen(t *testing.T) {
+	// Open errors if the config file doesn't exist
+	_, err := Open("foo.json", log)
+	assert.NotNil(t, err)
+
 	configFile, err := ioutil.TempFile("", "config.*.json")
 	if err != nil {
 		log.Fatal(err)
